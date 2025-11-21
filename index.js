@@ -3,7 +3,7 @@ const cors = require("cors");
 const app = express();
 require("dotenv").config();
 
-const { MongoClient, ServerApiVersion } = require("mongodb");
+const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
 const port = process.env.port || 3000;
 
@@ -23,7 +23,7 @@ const client = new MongoClient(uri, {
 
 async function run() {
   try {
-    await client.connect();
+    // await client.connect();
 
     const db = client.db("Zap_ShiftDB");
     const parcelsCollections = db.collection("parcels");
@@ -36,18 +36,33 @@ async function run() {
       if (email) {
         query.senderEmail = email;
       }
-      const cursor = parcelsCollections.find(query);
+
+      const options = {
+        sort: { createdAt: -1 },
+      };
+      const cursor = parcelsCollections.find(query, options);
       const result = await cursor.toArray();
       res.send(result);
     });
 
     app.post("/parcels", async (req, res) => {
       const parcel = req.body;
+      console.log(parcel);
+      const createdAt = new Date();
+      parcel.createdAt = createdAt;
       const result = await parcelsCollections.insertOne(parcel);
       res.send(result);
     });
 
-    await client.db("admin").command({ ping: 1 });
+    //pacel delete api
+    app.delete("/parcels/:id", async (req, res) => {
+      const id = req.params.id;
+      const query = {_id : new ObjectId(id)};
+      const result = await parcelsCollections.deleteOne(query);
+      res.send(result);
+    });
+
+    // await client.db("admin").command({ ping: 1 });
     console.log(
       "Pinged your deployment. You successfully connected to MongoDB!"
     );
