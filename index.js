@@ -76,12 +76,71 @@ async function run() {
     const paymentCollections = db.collection("payments");
     const riderCollections = db.collection("riders");
 
+    //middleware admin before allowing admin activity
+    //must be used after verifyFBToken middleware
+    const verifyAdmin = async (req, res, next) => {
+      const email = req.decoded_email;
+      const query = { email };
+      const user = await userCollections.findOne(query);
+      if (!user || user.role !== "admin") {
+        return res.status(403).send({ message: "forbidden access" });
+      }
+      next();
+    };
+
     //user api
 
     app.get("/users", verifyFBToken, async (req, res) => {
-      const cursor = userCollections.find();
+      const search = req.query.search;
+      const query = {};
+      if (search) {
+        query.$or = [
+          { displayName: { $regex: search, $options: "i" } },
+          { email: { $regex: search, $options: "i" } },
+        ];
+      }
+      const cursor = userCollections
+        .find(query)
+        .sort({ createdAt: -1 })
+        .limit(10);
       const result = await cursor.toArray();
       res.send(result);
+    });
+
+    app.get("/users/:id", async (req, res) => {});
+
+    app.get("/users/:email/role", async (req, res) => {
+      try {
+        const { email } = req.params;
+        if (!email) {
+          return res.status(400).json({
+            success: false,
+            message: "Email parameter is required",
+          });
+        }
+
+        const user = await userCollections.findOne({ email });
+
+        if (!user) {
+          return res.status(404).json({
+            success: false,
+            message: "User not found",
+            role: "user",
+          });
+        }
+
+        return res.status(200).json({
+          success: true,
+          role: user.role || "user",
+        });
+      } catch (error) {
+        console.error("Error fetching user role:", error);
+
+        return res.status(500).json({
+          success: false,
+          message: "Internal server error",
+        });
+      }
     });
 
     app.post("/users", async (req, res) => {
@@ -101,28 +160,36 @@ async function run() {
     });
 
     //manage user api
+    app.patch(
+      "/users/:id/role",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        const id = req.params.id;
+        const roleInfo = req.body;
+        const query = { _id: new ObjectId(id) };
+        const updateDoc = {
+          $set: {
+            role: roleInfo.role,
+          },
+        };
+        const result = await userCollections.updateOne(query, updateDoc);
 
-    app.patch("/users/:id", async (req, res) => {
-      const id = req.params.id;
-      const roleInfo = req.body;
-      const query = { _id: new ObjectId(id) };
-      const updateDoc = {
-        $set: {
-          role: roleInfo.role,
-        },
-      };
-      const result = await userCollections.updateOne(query, updateDoc);
-
-      res.send(result);
-    });
+        res.send(result);
+      }
+    );
 
     //parcel api
-
     app.get("/parcels", async (req, res) => {
       const query = {};
-      const { email } = req.query;
+      const { email, deliveryStatus } = req.query;
+
       if (email) {
         query.senderEmail = email;
+      }
+
+      if (deliveryStatus) {
+        query.deliveryStatus = deliveryStatus;
       }
 
       const options = {
@@ -149,6 +216,42 @@ async function run() {
       parcel.createdAt = createdAt;
       const result = await parcelsCollections.insertOne(parcel);
       res.send(result);
+    });
+
+    //parcel patch
+    app.patch("/parcels/:id", async (req, res) => {
+      const { riderId, riderEmail, riderName } = req.body;
+      const parcelId = req.params.id;
+      const parcelQuery = { _id: new ObjectId(parcelId) };
+
+      const parcelUpdateDoc = {
+        $set: {
+          deliveryStatus: "driver_assigned",
+          riderId,
+          riderName,
+          riderEmail,
+        },
+      };
+
+      const parcelResult = await parcelsCollections.updateOne(
+        parcelQuery,
+        parcelUpdateDoc
+      );
+
+      //update rider information
+      const riderQuery = { _id: new ObjectId(riderId) };
+      const riderUpdatedDoc = {
+        $set: {
+          workStatus: "in_delivery",
+        },
+      };
+
+      const riderResult = await riderCollections.updateOne(
+        riderQuery,
+        riderUpdatedDoc
+      );
+
+      res.send(riderResult);
     });
 
     //pacel delete api
@@ -224,7 +327,7 @@ async function run() {
     app.patch("/payment-success", async (req, res) => {
       const sessionId = req.query.session_id;
       const session = await stripe.checkout.sessions.retrieve(sessionId);
-      // console.log(session);
+
       const transactionId = session.payment_intent;
       const query = { transactionId: transactionId };
       const existingPayment = await paymentCollections.findOne(query);
@@ -247,6 +350,7 @@ async function run() {
           $set: {
             paymentStatus: "paid",
             trackingId: trackingId,
+            deliveryStatus: "pending-pickup",
           },
         };
         const result = await parcelsCollections.updateOne(filter, update);
@@ -317,18 +421,28 @@ async function run() {
     //rider role base get api
 
     app.get("/riders", async (req, res) => {
+      const { status, district, workStatus } = req.query;
+
       const query = {};
-      if (req.query.status) {
-        query.status = req.query.status;
+
+      if (status) {
+        query.status = status;
       }
+
+      if (district) {
+        query.district = district;
+      }
+      if (workStatus) {
+        query.workStatus = workStatus;
+      }
+
       const cursor = riderCollections.find(query);
       const result = await cursor.toArray();
       res.send(result);
     });
 
     //rider patch api
-
-    app.patch("/riders/:id", verifyFBToken, async (req, res) => {
+    app.patch("/riders/:id", verifyFBToken, verifyAdmin, async (req, res) => {
       const status = req.body.status;
       const id = req.params.id;
       const query = { _id: new ObjectId(id) };
@@ -336,6 +450,7 @@ async function run() {
       const updateDoc = {
         $set: {
           status: status,
+          workStatus: "available",
         },
       };
 
